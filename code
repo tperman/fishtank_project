@@ -5,7 +5,9 @@ int salinity_power_pin = 8;
 int solenoid_power_a = 12;
 int solenoid_power_b = 13;
 float salinitypercent;      // current salinity reading
-float setpt = 10;          //setpoint
+float setpt = .01;          //setpoint
+float gain = 0.75;
+ int last_salinity_update = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -20,6 +22,7 @@ void setup() {
   //LCDserial.write(157);                 // LCD light on command, not working. 
   delay(500);
   LCD_Display();
+ 
 }
 
 void loop() {
@@ -27,44 +30,56 @@ void loop() {
   int count = 15;
   float salinity_ave, salinity_stdev;
   sensor_reading_stats(salinity_power_pin, salinity_input_pin, count, &salinity_ave, &salinity_stdev,&salinitypercent);  // all major calculations done here
+  
+ 
+  
+  if ( ( millis() - last_salinity_update ) > deadtime ) {
   deadtime();
-  Serial.println (salinity_ave);
-  Serial.println (",  ");
-  Serial.println (salinity_stdev);
+  last_salinity_update = millis();
+  }
+  //Serial.println (salinity_ave);
+  //Serial.println (",  ");
+  //Serial.println (salinity_stdev);
   
 }
 
 void deadtime(){
 float LCL, UCL;
+float flowA =6.5;
+float flowB = 5.3;
+const float a = 0.00042;
+const float b = 0.00865;
 int deadtime = 3000;
 int Di, Salt, on, off;
-LCL = setpt- 18;      // our three times the deviation, setpt is a globe variable. 
-UCL = 18 + setpt; 
+float new_set = setpt + 18;
+float tol = a*exp(new_set*b);
+float delta = setpt - tol;
+LCL =setpt - delta;      // our three times the deviation
+UCL =setpt + delta; 
+float mass = gain_error();
+flowA = mass/flowA;
+flowA = flowA*1000;
+flowB = mass/flowB;
+flowB = flowB*1000;
  update_LCD(LCL,UCL,Di,Salt);
- float last_salinity_update = millis();
-  
-  if ( ( millis() - last_salinity_update ) > deadtime ) {
+ 
 
-    if ( salinitypercent>UCL ) {
-         digitalWrite(solenoid_power_a,HIGH);
-        Di = on;
+    if (salinitypercent>UCL ) {
+        
+        digitalWrite(solenoid_power_a,HIGH);
+        delay(flowA);
+        digitalWrite(solenoid_power_a,LOW);   
       
-      last_salinity_update = millis();
+      Serial.print(digitalRead (solenoid_power_a));
     }
-    else{
-      digitalWrite(solenoid_power_a,LOW);
-      Di = off;
-    }
-
+    
     if ( salinitypercent<LCL ) {
       digitalWrite(solenoid_power_b,HIGH);
-      last_salinity_update = millis();
-      Salt = on;
-    }
-    else{ 
+      delay(flowB);
       digitalWrite(solenoid_power_b,LOW);
-      Salt = off;}
+      
     }
+    
     
   }
 
@@ -73,8 +88,8 @@ void sensor_reading_stats (int power_pin, int input_pin, int n, float *ave, floa
   float reading [Buffer_length];
   k = min(n, Buffer_length);
   float dev, sum;
-  const float a = 0.000333;
-  const float b = 0.00867;
+  const float a = 0.00042;
+  const float b = 0.00865;
   unsigned long currentMillis = millis();
   unsigned long lastMillis = 0;
   const long interval = 100;
@@ -84,11 +99,6 @@ void sensor_reading_stats (int power_pin, int input_pin, int n, float *ave, floa
     Pstate = HIGH;
   } else {
     Pstate = LOW;
-
-    if (currentMillis - lastMillis >= interval) {
-
-      lastMillis = currentMillis;
-    }
   }
 
   for (i = 1 ; i <= k ; i++) {
@@ -112,6 +122,26 @@ void sensor_reading_stats (int power_pin, int input_pin, int n, float *ave, floa
   
   *salinitypercent = a*exp(*ave*b);          // the average is used to calculate the current salinity reading 
   
+}
+
+float gain_error (){
+  float change,flow,massT,massA;
+  float salttank = 0.1;
+  float ditank = 0.0;
+ 
+ if (salinitypercent > setpt){
+ change =salinitypercent - setpt;
+ float salfinal = change*gain;
+ massA = massT*((1/1-flow)*(salinitypercent-salfinal)/(salinitypercent- salttank));
+ 
+ }
+
+ else if(salinitypercent < setpt){
+  change = setpt - salinitypercent;
+  float salfinal = change*gain;
+  massA = massT*((1/1-flow)*(salinitypercent-salfinal)/(salinitypercent- ditank));
+ }
+ return massA;
 }
 
 
@@ -175,3 +205,7 @@ void LCD_Display() {
   LCDserial.write(163);
   LCDserial.write("DI");
 }
+
+
+
+
