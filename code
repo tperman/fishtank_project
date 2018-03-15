@@ -1,15 +1,27 @@
 #include <SoftwareSerial.h>
-#define Buffer_length 10
+#define Buffer_length 15
 SoftwareSerial LCDserial(3, 2);
-int salinity_power_pin = 8;
+int salinity_power_pin = 7;
 int solenoid_power_a = 12;
 int solenoid_power_b = 13;
 float salinitypercent;      // current salinity reading
-float setpt = .002;          //setpoint
-float gain = 0.75;
- int last_salinity_update = 0;
- int deadtime = 5000;
- const float e = 2.71828;
+float setpt = 0.8;          //setpoint
+float gain = 0.8;
+float last_salinity_update = 0;
+int deadtime = 10000; 
+const float e = 2.71828;
+
+
+//-------Heat Stuff -------
+float tempC;
+float last_heat_update;
+float heattime;
+float Tsetpt = 30;
+float TLCL = Tsetpt - 2;
+float TUCL = Tsetpt + 2;
+int heaterstatus;
+float tempsensor = 2;
+float heatpin = 10;
 
 void setup() {
   Serial.begin(9600);
@@ -21,80 +33,169 @@ void setup() {
   LCDserial.write(254);
   LCDserial.write(1);
   LCDserial.write(254);
-  //LCDserial.write(157);                 // LCD light on command, not working. 
   delay(500);
   LCD_Display();
   //Serial.println("check 1");
+
+
+pinMode (heatpin, OUTPUT);
+//pinMode(tempsensor, INPUT);
+  heaterstatus = 0;
 }
 
 void loop() {
-  int salinity_input_pin = 2;
+  /*float mapp;
+  mapp = analogRead(4);
+  mapp = map(mapp,0.0,1023.0,0.0,100.0);
+  float REALMAPP = mapp/100;
+  setpt = REALMAPP;*/
+  
+  
+  int salinity_input_pin = 1;
   int count = 15;
   float salinity_ave, salinity_stdev;
-  sensor_reading_stats(salinity_power_pin, salinity_input_pin, count, &salinity_ave, &salinity_stdev,&salinitypercent);  // all major calculations done here
-  
-  //Serial.println("check 2");
-  
-  if ( ( millis() - last_salinity_update ) > deadtime ) {
-   
-  control();
-  last_salinity_update = millis();
+  Serial.println("Checking salinity");
+  sensor_reading_stats(salinity_power_pin, salinity_input_pin, count, &salinity_ave, &salinity_stdev, &salinitypercent);  // all major calculations done here
+
+
+  if ( ( millis() - last_salinity_update ) >= deadtime ) {
+    float waitTime = ( millis() - last_salinity_update ) / 1000.0;
+    Serial.println("#################### Adjust ####################");
+    Serial.print("It has been "); Serial.print(waitTime); Serial.println(" s since the last adjustment");
+    Serial.println("Making an adjustment");
+    float LCL, UCL;
+    float flowA = 3.5;
+    float flowB = 2.3;
+    const float a = 0.00042;
+    const float b = 0.00865;
+    int Di, Salt, on, off;
+
+    /*
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+      You calculate stdev on the fly but dont use it???
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    */
+    LCL = setpt - .0017;     // our three times the deviation
+    UCL = setpt + .0017;
+    /*
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+      'gain_error' has no return....
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    */
+    float mass = gain_error();
+    Serial.print("Mass Add = ");
+    Serial.print(mass);
+    Serial.println(" g");
+    float flowA1 = mass / flowA;
+    float timeA = flowA1 * 1000;
+    timeA = abs(timeA);
+    float flowB1 = mass / flowB;
+    float timeB = flowB1 * 1000;
+    timeB = abs(timeB);
+    //Serial.print("Mass = ");
+    //Serial.println(mass);
+
+    //Serial.print("TimeB = ");
+    //Serial.println(timeB);
+    //Serial.print("Salinity Percent = ");
+    //Serial.println(salinitypercent);
+
+    update_LCD(LCL, UCL, TUCL, TLCL, tempC, heaterstatus);
+
+
+    if (salinitypercent > UCL ) {
+      Serial.print("Calculated open Time = "); Serial.print(timeA / 1000); Serial.println(" s");
+      float openValveTime = ((float)millis());
+      digitalWrite(solenoid_power_a, HIGH);
+      /*LCDserial.write(254);
+      LCDserial.write(212);
+      LCDserial.write("on ");
+      LCDserial.write(254);
+      LCDserial.write(226);
+      LCDserial.write("off");
+      */delay(timeA);
+      digitalWrite(solenoid_power_a, LOW);
+      float openTime = ( millis() - openValveTime ) / 1000.0;
+      Serial.print("I opened the DI valve for "); Serial.print(openTime); Serial.println(" s");
+      Serial.println("##################### Done #####################");
+    }
+
+    else if (salinitypercent < LCL ) {
+      Serial.print("Calculated open Time = "); Serial.println(timeB / 1000); Serial.println(" s");
+      float openValveTime = ((float)millis());
+      digitalWrite(solenoid_power_b, HIGH);
+      /*LCDserial.write(254);
+      LCDserial.write(212);
+      LCDserial.write("off");
+      LCDserial.write(254);
+      LCDserial.write(226);
+      LCDserial.write("on ");
+     */ delay(timeB);
+      digitalWrite(solenoid_power_b, LOW);
+      float openTime = ( millis() - openValveTime ) / 1000.0;
+      Serial.print("I opened the salty valve for "); Serial.print(openTime); Serial.println(" s");
+      Serial.println("##################### Done #####################");
+    }
+   /* LCDserial.write(254);
+    LCDserial.write(212);
+    LCDserial.write("off");
+    LCDserial.write(254);
+    LCDserial.write(226);
+    LCDserial.write("off");
+    last_salinity_update = millis();
+*/
   }
+
+  float temp = analogRead(tempsensor);
+   Serial.print("TEMPERATURE = ");
+  Serial.println(temp);
+  
+  float volt = temp * (5.0/1023.0);
+  Serial.print("voltage = ");
+  Serial.println(volt);
+  
+  tempC = (volt*21.9)-29.2;
+  tempC = abs(tempC);
+  Serial.print("TEMP IN C = ");
+  Serial.println(tempC);
+  
+  if (heaterstatus == 0 && tempC < TLCL){
+    
+      heattime = (TLCL - tempC)*80000;
+      Serial.print("Heat  time = ");
+      Serial.println(heattime);
+      heaterstatus = 1;
+      last_heat_update = millis(); 
+      digitalWrite(heatpin, HIGH);
+ 
+  }
+
+ 
+  if (heaterstatus == 1 && ( millis() - last_heat_update ) >= heattime ) {
+    
+      digitalWrite(heatpin, LOW); 
+      heaterstatus = 0;
+ 
+  }
+
+
   //Serial.println("check 3");
-  Serial.print (salinity_ave);
+  Serial.print("Salinity average = ");
+  Serial.print(salinity_ave);
   //Serial.print (",  ");
-  Serial.print (salinity_stdev);
+  Serial.print("    Salinity Standard Deviation = ");
+  Serial.println (salinity_stdev);
   //Serial.print (",  ");
   //Serial.print(salinitypercent,5);
+
   
-  
+
+
 }
-//-------------------------------------------------deadtime / control of solenoids ------------------------------------------------
-void control(){
-float LCL, UCL;
-float flowA =6.5;
-float flowB = 5.3;
-const float a = 0.00042;
-const float b = 0.00865;
-int Di, Salt, on, off;
-
-
-LCL =setpt - .0017;      // our three times the deviation
-UCL =setpt + .0017; 
 
 
 
-float mass = gain_error();
-flowA = mass/flowA;
-float timeA = flowA*1000;
-timeA = abs(timeA);
-flowB = mass/flowB;
-float timeB = flowB*1000;
-timeB = abs(timeB);
-Serial.print(mass);
-Serial.println("  ");
-Serial.print(timeA);
- update_LCD(LCL,UCL,Di,Salt);
- 
 
-    if (salinitypercent>UCL ) {
-        
-        digitalWrite(solenoid_power_a,HIGH);
-        delay(timeA);
-        digitalWrite(solenoid_power_a,LOW);   
-      
-      //Serial.println(digitalRead (solenoid_power_a));
-    }
-    
-   else if (salinitypercent<LCL ) {
-        digitalWrite(solenoid_power_b,HIGH);
-        delay(timeB);
-        digitalWrite(solenoid_power_b,LOW);
-      
-    }
-    
-    
-  }
 
 //-------------------------------------------------sensor_readiing_stats (read sal) ------------------------------------------------
 
@@ -106,118 +207,183 @@ void sensor_reading_stats (int power_pin, int input_pin, int n, float *ave, floa
   const float a = 0.00042;
   const float b = 0.00865;
   //int Pstate = LOW;
-  
-  /*if (Pstate == LOW) {    
+
+  /*if (Pstate == LOW) {
     Pstate = HIGH;
-  } else {
+    } else {
     Pstate = LOW;
-  }*/
+    }*/
 
-  for (i = 1 ; i <= k ; i++) {
 
-    digitalWrite (power_pin, HIGH);  // power pin is continuesly on from Pstate if statment 
+ 
+
+  for (i = 0 ; i < k ; i++) {
+
+    digitalWrite (power_pin, HIGH);  // power pin is continuesly on from Pstate if statment
     delay (100);
     reading[i] = analogRead (input_pin);
     digitalWrite (power_pin, LOW);
     delay(100);
   }
 
-  for (sum = 0.0, i = 1; i <= k; i++) {     // fifteen reading collected 
+  for (sum = 0.0, i = 0; i < k; i++) {     // fifteen reading collected
     sum += reading[i];
   }
-  *ave = sum / float(n);                     // calculating average
+  *ave = sum / k;                     // calculating average
+  Serial.println(*ave);
 
-  for (dev = 0.0, i = 1; i <= k; i++) {
-    dev += pow(reading[i] - *ave, 2);
-  }
-  *stdev = sqrt (dev / float(k - 1));        // calculating standard deviation
-  
-  //*salinitypercent = a*exp(*ave*b); // the average is used to calculate the current salinity reading
-  *salinitypercent = a*(pow(e, *ave*b));
-  //Serial.println(*salinitypercent);
-  
+  /*
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    Standar deviation can be a constant...
+    Lets say 27...
+    you can reimplement this if you want...
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+
+    for (dev = 0.0, i = 1; i <= k; i++) {
+      dev += pow(reading[i] - *ave, 2);
+    }
+     stdev = sqrt (dev / float(k - 1));        // calculating standard deviation
+  */
+  *stdev = 27;
+
+
+
+  *salinitypercent = a * exp(*ave * b); // the average is used to calculate the current salinity reading
+  //*salinitypercent = a*(pow(e, *ave*b));
+  Serial.println("Current");Serial.println(*salinitypercent,5);
+
 }
 
 //-------------------------------------------------gain_error / control of solenoids ------------------------------------------------
+/*
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+  KC
+  Purpose: determine mass to add
 
-float gain_error (){
-  float change,flowA= 6.5,flowB = 5.3, massT=146,massA;
-  float salttank = 1.0;
+
+  This given equation already accounts for gain/error calc
+  You dont need change or salfinal variables...
+  i.e replace salinityfraction with a setpt
+  also
+  replace salfinal with salinityfraction
+
+  Also issues with mass fraction vs percent
+
+  Also other stuff...
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+*/
+float gain_error () {
+  float massT = 146, massA;
+  float salttank = .01;
   float ditank = 0.0;
- 
- if (salinitypercent > setpt){
- change = salinitypercent - setpt;
- float salfinal = change*gain;
- massA = massT*((1/(1-flowA))*(gain*(salinitypercent-salfinal))/(salinitypercent- salttank));
- 
- }
-
- else if(salinitypercent < setpt){
-  change = setpt - salinitypercent;
-  float salfinal = change*gain;
-  massA = massT*((1/(1-flowB))*(gain*(salinitypercent-salfinal))/(salinitypercent- ditank));
- }
- return massA;
+  float salinityfraction = salinitypercent / 100;
+  float f = 0.15;
+  float add;
+  Serial.print("Set point fraction is "); Serial.println(setpt / 100, 5);
+  Serial.print("The salinity fraction is "); Serial.println(salinityfraction, 5);
+  if (salinitypercent > setpt) {
+    add = ditank;
+  }
+  else if (salinitypercent < setpt) {
+    add = salttank;
+  }
+  massA = massT * (1 / (1 - f)) * ((gain * (setpt / 100 - salinityfraction)) / (add - salinityfraction ));
+  return massA;
 }
 
- 
-void update_LCD(float LCL, float UCL,int Di,int Salt) {
+
+void update_LCD(float LCL, float UCL,int TUCL,int TLCL, int tempC, int heaterstatus) {
 
   char LCD_string[10];
 
-  dtostrf(LCL, 5, 3, LCD_string);
+  dtostrf(LCL, 4, 3, LCD_string);
   LCDserial.write(254);
-  LCDserial.write(192);
+  LCDserial.write(195);
   LCDserial.write(LCD_string);
 
+  dtostrf(setpt, 4, 3, LCD_string);
+  LCDserial.write(254);
+  LCDserial.write(201);
+  LCDserial.write(LCD_string);
+
+  dtostrf(salinitypercent, 4, 3, LCD_string);
+  LCDserial.write(254);
+  LCDserial.write(214);
+  LCDserial.write(LCD_string);
+
+  dtostrf(UCL, 4, 3, LCD_string);
+  LCDserial.write(254);
+  LCDserial.write(207);
+  LCDserial.write(LCD_string);
+
+    dtostrf(TUCL, 3, 1, LCD_string);
+    LCDserial.write(254);
+    LCDserial.write(164);
+    LCDserial.write(LCD_string);
+
+    dtostrf(TLCL, 3, 1, LCD_string);
+    LCDserial.write(254);
+    LCDserial.write(152);
+    LCDserial.write(LCD_string);
+
+    dtostrf(Tsetpt, 3, 1, LCD_string);
+    LCDserial.write(254);
+    LCDserial.write(158);
+    LCDserial.write(LCD_string);
+    
+    dtostrf(tempC, 3, 1, LCD_string);
+    LCDserial.write(254);
+    LCDserial.write(222);
+    LCDserial.write(LCD_string);
+    
+   if(heaterstatus<1)  {
+    dtostrf(heaterstatus, 5, 3, LCD_string);
+      LCDserial.write(254);
+      LCDserial.write(229);
+      LCDserial.write("off");
+      }
+
+        else {
+          LCDserial.write(254);
+          LCDserial.write(229);
+          LCDserial.write("on");
+          }
   
-  LCDserial.write(254);
-  LCDserial.write(212);
-  LCDserial.write(Salt);
-
-  dtostrf(setpt, 5, 3, LCD_string);
-  LCDserial.write(254);
-  LCDserial.write(199);
-  LCDserial.write(LCD_string);
-
-  dtostrf(salinitypercent, 5, 3, LCD_string);
-  LCDserial.write(254);
-  LCDserial.write(219);
-  LCDserial.write(LCD_string);
-
-  dtostrf(UCL, 5, 3, LCD_string);
-  LCDserial.write(254);
-  LCDserial.write(206);
-  LCDserial.write(LCD_string);
-
   
-  LCDserial.write(254);
-  LCDserial.write(226);
-  LCDserial.write(Di);
+
+
 }
 
 void LCD_Display() {
   LCDserial.write(254);
-  LCDserial.write(133);
-  LCDserial.write(" LCL");
+  LCDserial.write(131);
+  LCDserial.write("    LCL");
 
   LCDserial.write(254);
-  LCDserial.write(135);
-  LCDserial.write("SetPt");
+  LCDserial.write(139);
+  LCDserial.write("SP");
 
   LCDserial.write(254);
-  LCDserial.write(143);
+  LCDserial.write(144);
   LCDserial.write("UCL");
 
   LCDserial.write(254);
+  LCDserial.write(192);
+  LCDserial.write("S:");
+
+  LCDserial.write(254);
   LCDserial.write(148);
-  LCDserial.write("Salty");
+  LCDserial.write("T:");
 
   LCDserial.write(254);
-  LCDserial.write(154);
-  LCDserial.write("Current");
+  LCDserial.write(212);
+  LCDserial.write("S=");
 
   LCDserial.write(254);
-  LCDserial.write(163);
-  LCDserial.write("DI");
+  LCDserial.write(220);
+  LCDserial.write("T=");
+
+  LCDserial.write(254);
+  LCDserial.write(227);
+  LCDserial.write("H=");
 }
